@@ -17,12 +17,13 @@ override CFLAGS += $(shell pkg-config --cflags ncursesw) \
                    -Wstrict-prototypes
 
 override LDLIBS += -lreadline \
+		   -lpthread \
                    $(shell pkg-config --libs-only-l ncursesw)
 
 override LDFLAGS += $(shell pkg-config --libs-only-L --libs-only-other ncursesw)
 
-rlncurses: rlncurses.c
+attach: attach.c
 
 .PHONY: clean
 clean:
-	$(RM) rlncurses
+	$(RM) attach

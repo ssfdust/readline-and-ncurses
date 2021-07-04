@@ -16,6 +16,14 @@
 #include <string.h>
 #include <wchar.h>
 #include <wctype.h>
+#include <unistd.h>
+#include <stdlib.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <signal.h>
+#include <pthread.h>
+#include <regex.h>
 
 #define max(a, b)         \
   ({ typeof(a) _a = a;    \
@@ -25,6 +33,21 @@
 // Keeps track of the terminal mode so we can reset the terminal if needed on
 // errors
 static bool visual_mode = false;
+
+static volatile unsigned int catch_int = 0;
+void *read_from_fdfile(void *);
+void int_handler(int);
+void init(void);
+void create_read_threads(char *);
+
+void int_handler(int _) {
+    catch_int = 1;
+    endwin();
+    // wait for thread exiting.
+    sleep(1);
+    exit(0);
+}
+
 
 static noreturn void fail_exit(const char *msg)
 {
@@ -61,6 +84,8 @@ static unsigned char input;
 
 // Used to signal "no more input" after feeding a character to readline
 static bool input_avail = false;
+
+static char * infd = NULL;
 
 // Calculates the cursor column for the readline window in a way that supports
 // multibyte, multi-column and combining characters. readline itself calculates
@@ -142,8 +167,14 @@ static void forward_to_readline(char c)
 
 static void msg_win_redisplay(bool for_resize)
 {
-    CHECK(werase, msg_win);
-    CHECK(mvwaddstr, msg_win, 0, 0, msg_win_str ? msg_win_str : "");
+    // CHECK(werase, msg_win);
+    char tmp[128];
+    int write_fd = open(infd, O_WRONLY);
+
+    sprintf(tmp, "%s\n", msg_win_str); 
+    CHECK(wprintw, msg_win, msg_win_str ? tmp : "");
+    write(write_fd, tmp, strlen(tmp));
+    close(write_fd);
 
     // We batch window updates when resizing
     if (for_resize)
@@ -311,14 +342,55 @@ static void deinit_readline(void)
     rl_callback_handler_remove();
 }
 
-int main(void)
+void create_read_threads(char * pid) {
+    char * outfd = (char *)malloc(sizeof(char) * 50);
+    char * errfd = (char *)malloc(sizeof(char) * 50);
+    pthread_t thread_id;
+    sprintf(errfd, "/proc/%s/fd/2", pid);
+    sprintf(outfd, "/proc/%s/fd/1", pid);
+    pthread_create(&thread_id, NULL, read_from_fdfile, (void *)outfd);
+    // pthread_create(&thread_id, NULL, read_from_fdfile, (void *)errfd);
+}
+
+void *read_from_fdfile(void *fdfile_b){
+    char *fd_file = (char *)fdfile_b;
+    char * buf = NULL;
+    int nbytes;
+    int fd = open(fd_file, O_RDONLY);
+
+    if(!fd) {
+        wprintw(msg_win, "Openfile error %s\n", fd_file);
+        exit(-1);
+    }
+
+    while(1) {
+        if (catch_int == 1)
+            break;
+        buf = (char *)malloc(sizeof(char) * 128);
+        nbytes = read(fd, buf, 16);
+        if(nbytes > 0) {
+            wprintw(msg_win, "%s", buf);
+            CHECK(wrefresh, msg_win);
+        }
+        free(buf);
+        usleep(2000);
+    }
+    close(fd);
+}
+
+int main(int argc, char *argv[])
 {
     // Set locale attributes (including encoding) from the environment
     if (!setlocale(LC_ALL, ""))
         fail_exit("Failed to set locale attributes from environment");
+    if (argc != 2)
+        fail_exit("please input the pid");
+    infd = (char *)malloc(sizeof(char) * 50);
+    sprintf(infd, "/proc/%s/fd/0", argv[1]);
 
     init_ncurses();
     init_readline();
+    create_read_threads(argv[1]);
 
     do {
         // Using getch() here instead would refresh stdscr, overwriting the
@@ -348,3 +420,6 @@ int main(void)
 
     puts("Shut down cleanly");
 }
+
+
+/* vim: set nu rnu ts=4 sw=4 expandtab sts=4 smartindent undofile: */
